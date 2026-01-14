@@ -308,7 +308,7 @@ python test.py --seed 42 --model_type global --dataset zhongshan
 | `--seed` | 42 | Random seed, also used for building model path |
 | `--model_type` | global | Model type: global (global model) or local_mm (local multi-modal model) |
 | `--dataset` | gamma | Test dataset name |
-| `--data_dir` | ../data | Data directory path |
+| `--data_dir` | ./data | Data directory path |
 | `--batch_size` | 16 | Batch size |
 | `--num_workers` | 2 | Number of worker processes for data loading |
 | `--device` | cuda | Computing device (cuda/cpu) |
