@@ -9,7 +9,7 @@ This project implements a glaucoma diagnosis system based on federated learning 
 - **Federated Learning Architecture**: Supports multiple medical institutions to collaboratively train models without sharing original data
 - **Knowledge Distillation Technology**: Implements knowledge transfer between heterogeneous models through teacher-student framework
 - **Multi-modal Fusion**: Supports joint modeling of multiple modal data such as fundus images (OCT), fundus photographs (CLI), visual field examination (VF)
-- **Multi-dataset Support**: Compatible with multiple glaucoma datasets including gamma, papila, zhongshan, gongli, airogs
+- **Multi-dataset Support**: Compatible with multiple glaucoma datasets including gamma, zhongshan, gongli, airogs
 
 ### Algorithm Flow
 
@@ -105,7 +105,7 @@ python FedBKD_train.py \
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--num_rounds` | 30 | Number of communication rounds for federated learning |
+| `--num_rounds` | 50 | Number of communication rounds for federated learning |
 | `--local_epochs` | 2 | Number of local training epochs for each client |
 | `--kd_epochs` | 1 | Number of training epochs for knowledge distillation |
 
@@ -157,7 +157,7 @@ from models import get_model
 # Parameter description:
 # - model_type: Model type ('mm' for Multi-Modal / 'um' for Uni-Modal)
 # - backbone: Backbone network ('resnet' / 'mobilenet')
-# - dataset: Dataset name ('gamma' / 'papila' / 'zhongshan' / 'gongli' / 'airogs')
+# - dataset: Dataset name ('gamma' / 'zhongshan' / 'gongli' / 'airogs')
 # - num_classes: Number of classes (default 2)
 
 # Multi-modal model (ResNet18, gamma dataset)
@@ -171,7 +171,7 @@ um_model = get_model(model_type='um', backbone='mobilenet', dataset='zhongshan',
 
 | model_type | Description | Supported Datasets |
 |------------|-------------|--------------------|
-| `mm` | Multi-modal model, supporting joint modeling of fundus images, OCT and other modal data | gamma, papila, zhongshan, gongli |
+| `mm` | Multi-modal model, supporting joint modeling of fundus images, OCT and other modal data | gamma, zhongshan, gongli |
 | `um` | Uni-modal model, only using fundus images for diagnosis | gamma, zhongshan, gongli, airogs |
 
 ### Backbone Networks
