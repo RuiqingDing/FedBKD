@@ -21,7 +21,7 @@ This project implements a glaucoma diagnosis system based on federated learning 
 ## Directory Structure
 
 ```
-fedbkd_new/
+FedBKD/
 ├── models.py          # Model definitions, including various network architectures
 ├── utils.py           # Utility functions, including evaluation metrics, federated averaging, etc.
 ├── dataloader.py      # Data loading module, supporting multi-modal data
@@ -152,7 +152,7 @@ python FedBKD_train.py \
 This project uses a unified model creation interface, dynamically creating required models through the `get_model()` function based on parameters.
 
 ```python
-from fedbkd_new.models import get_model
+from models import get_model
 
 # Parameter description:
 # - model_type: Model type ('mm' for Multi-Modal / 'um' for Uni-Modal)
