@@ -13,10 +13,6 @@ Main features:
 3. Global model aggregation: the server aggregates all clients' single-modal fundus models
 4. Reverse knowledge distillation: global model → gamma, zhongshan, gongli multi-modal models
 5. Model evaluation and result saving
-
-Author: Glaucoma Diagnosis Team
-Created: 2025-01-11
-Copyright © 2025 Glaucoma Diagnosis Team. All rights reserved.
 """
 
 import argparse
@@ -958,8 +954,6 @@ def main() -> None:
                 save_final_models(args, seed, global_model, client_mm_models)
 
         print(f"\nTraining completed for all {args.num_seeds} seeds!")
-        # 禁用CSV文件保存
-        # print(f"汇总结果已保存到: {os.path.join(args.output_dir, 'all_results.csv')}")
 
     else:
         global_model, client_mm_models = train_with_seed(args, args.seed)
