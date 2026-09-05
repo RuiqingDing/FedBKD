@@ -9,6 +9,7 @@ Created: 2025-01-11
 """
 
 import argparse
+import inspect
 import os
 import sys
 from typing import Tuple
@@ -20,15 +21,14 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-warnings.filterwarnings('ignore')
-
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils import (
     calculate_metrics,
     print_metrics,
     test_model,
-    set_seed
+    set_seed,
+    resolve_device
 )
 from dataloader import FullDataLoader, FullDataset
 from models import get_model
@@ -47,8 +47,12 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default='gamma',
                         choices=['gamma', 'zhongshan', 'gongli', 'airogs_0', 'airogs_1', 'airogs_2', 'airogs_3', 'airogs_4'],
                         help='Test dataset name')
-    parser.add_argument('--data_dir', type=str, default='./data',
+    parser.add_argument('--data_dir', type=str,
+                        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'),
                         help='Data directory path')
+    parser.add_argument('--output_dir', type=str,
+                        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'checkpoint'),
+                        help='Checkpoint root directory')
     parser.add_argument('--batch_size', type=int, default=16,
                         help='Batch size')
     parser.add_argument('--num_workers', type=int, default=2,
@@ -65,16 +69,11 @@ def parse_args():
 def detect_backbone_from_checkpoint(checkpoint):
     """Auto-detect backbone type from checkpoint keys"""
     state_dict_keys = list(checkpoint.get('model_state_dict', checkpoint).keys())
-    
-    has_fundus_branch = any('fundus_branch' in key for key in state_dict_keys)
-    has_features = any('features.' in key and 'classifier' not in key for key in state_dict_keys)
-    
-    if has_fundus_branch:
-        return 'resnet'
-    elif has_features:
+
+    # MobileNetV2 has feature block 18; ResNet18 ends at block 7.
+    if any(key.startswith(('features.18.', 'fundus_branch.18.')) for key in state_dict_keys):
         return 'mobilenet'
-    else:
-        return 'resnet'
+    return 'resnet'
 
 
 def load_test_dataset(args: argparse.Namespace) -> Tuple[FullDataLoader, str]:
@@ -168,7 +167,10 @@ def load_model(args: argparse.Namespace) -> nn.Module:
     Returns:
         model: Model loaded with weights
     """
-    checkpoint = torch.load(args.model_path, map_location='cpu', weights_only=False)
+    load_kwargs = {'map_location': 'cpu'}
+    if 'weights_only' in inspect.signature(torch.load).parameters:
+        load_kwargs['weights_only'] = True
+    checkpoint = torch.load(args.model_path, **load_kwargs)
     
     if args.backbone is not None:
         backbone = args.backbone
@@ -200,7 +202,7 @@ def load_model(args: argparse.Namespace) -> nn.Module:
         num_classes=num_classes
     )
     
-    state_dict = checkpoint['model_state_dict']
+    state_dict = checkpoint.get('model_state_dict', checkpoint)
     state_dict = remap_state_dict_keys(state_dict, backbone, model_type)
     
     model.load_state_dict(state_dict)
@@ -213,23 +215,28 @@ def main() -> None:
     
     if args.model_path is None:
         
-        base_output_dir = './checkpoint'
+        base_output_dir = args.output_dir
         
         seed_output_dir = os.path.join(base_output_dir, f'seed_{args.seed}')
         
         if args.model_type == 'global':
-            model_filename = 'global_model_best.pth'
+            filenames = ['global_model_best.pth', 'global_model_final.pth']
         elif args.model_type == 'local_mm':
-            model_filename = f'local_mm_model_{args.dataset}_best.pth'
+            filenames = [
+                f'local_mm_model_{args.dataset}_best.pth',
+                f'local_mm_model_{args.dataset}_final.pth',
+                f'local_mm_model_{args.dataset}.pth'
+            ]
         else:
             raise ValueError(f"Unsupported model type: {args.model_type}")
-        
-        args.model_path = os.path.join(seed_output_dir, model_filename)
+
+        candidates = [os.path.join(seed_output_dir, name) for name in filenames]
+        args.model_path = next((path for path in candidates if os.path.exists(path)), candidates[0])
         print(f"Auto-constructed model path: {args.model_path}")
     
     set_seed(args.seed)
     
-    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+    device = resolve_device(args.device)
     print(f"Using device: {device}")
     print(f"Model path: {args.model_path}")
     print(f"Test dataset: {args.dataset}")

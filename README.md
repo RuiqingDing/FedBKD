@@ -27,7 +27,7 @@ FedBKD/
 ├── dataloader.py      # Data loading module, supporting multi-modal data
 ├── FedBKD_train.py    # Main training script
 ├── test.py            # Model testing script
-├── run.sh             # Training run script
+├── requirements.txt   # Python dependencies
 ├── data/              # Data directory
 │   ├── Train/         # Training data
 │   └── Test/          # Testing data
@@ -39,7 +39,7 @@ FedBKD/
 
 ### Python Version Requirements
 
-- Python 3.7+
+- Python 3.9+
 
 ### Experimental Environment (Reference)
 
@@ -54,11 +54,14 @@ Scikit-learn 1.6.1
 ### Package Dependencies
 
 ```bash
-pip install torch torchvision
-pip install numpy pandas
-pip install scikit-learn
-pip install tqdm
+pip install -r requirements.txt
 ```
+
+The included sample files cover `gamma` and `airogs_0`; these are therefore the
+default clients. Add other clients with `--datasets` only after placing their PKL
+files under the configured `Train` and `Test` directories.
+
+PKL files are Python pickle data. Only load datasets from trusted sources.
 
 ## Quick Start
 
@@ -105,7 +108,7 @@ python FedBKD_train.py \
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--num_rounds` | 50 | Number of communication rounds for federated learning |
+| `--num_rounds` | 30 | Number of communication rounds for federated learning |
 | `--local_epochs` | 2 | Number of local training epochs for each client |
 | `--kd_epochs` | 1 | Number of training epochs for knowledge distillation |
 
@@ -113,9 +116,11 @@ python FedBKD_train.py \
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--datasets` | gamma,zhongshan,gongli,airogs_* | List of datasets participating in federated learning |
+| `--datasets` | gamma,airogs_0 | List of datasets participating in federated learning |
+| `--data_dir` | project data directory | Root containing `Train` and `Test` |
 | `--batch_size` | 16 | Batch size |
 | `--num_workers` | 2 | Number of worker processes for data loading |
+| `--cache_data` | False | Cache all decoded samples in memory; enable only when RAM permits |
 
 ### Model Parameters
 

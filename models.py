@@ -423,10 +423,10 @@ def _create_backbone(backbone_type: str = 'resnet'):
     """
 
     if backbone_type == 'resnet':
-        resnet = models.resnet18(pretrained=True)
+        resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
         return nn.Sequential(*list(resnet.children())[:-1])
     elif backbone_type == 'mobilenet':
-        mobilenet = models.mobilenet_v2(pretrained=True)
+        mobilenet = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
         return mobilenet.features
     else:
         raise ValueError(f"Unsupported backbone network: {backbone_type}, only 'resnet' or 'mobilenet' are supported")
@@ -762,4 +762,3 @@ def get_model(
             raise ValueError(f"Unsupported model type: {model_type}, only 'mm' or 'um' are supported")
     else:
         raise ValueError("Non-unified mode is deprecated, please use use_unified=True")
-

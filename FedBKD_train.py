@@ -20,6 +20,7 @@ Copyright © 2025 Glaucoma Diagnosis Team. All rights reserved.
 """
 
 import argparse
+import copy
 import os
 import sys
 import warnings
@@ -32,8 +33,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-warnings.filterwarnings('ignore')
-
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils import (
@@ -42,6 +41,7 @@ from utils import (
     print_metrics,
     save_model,
     set_seed,
+    resolve_device,
     test_model,
     validate_model
 )
@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--datasets',
         type=str,
-        default='gamma,zhongshan,gongli,airogs_0,airogs_1,airogs_2,airogs_3,airogs_4',
+        default='gamma,airogs_0',
         help='Comma-separated list of datasets participating in federated learning'
     )
     parser.add_argument(
@@ -135,6 +135,11 @@ def parse_args() -> argparse.Namespace:
         help='Number of data loader workers'
     )
     parser.add_argument(
+        '--cache_data',
+        action='store_true',
+        help='Cache all decoded PKL samples in memory'
+    )
+    parser.add_argument(
         '--seed',
         type=int,
         default=42,
@@ -158,9 +163,15 @@ def parse_args() -> argparse.Namespace:
         help='Compute device, supports CUDA or CPU'
     )
     parser.add_argument(
+        '--data_dir',
+        type=str,
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'),
+        help='Root directory containing Train and Test folders'
+    )
+    parser.add_argument(
         '--output_dir',
         type=str,
-        default='./checkpoint',
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'checkpoint'),
         help='Output directory for training results and checkpoints'
     )
     parser.add_argument(
@@ -191,9 +202,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    """Validate command-line values before expensive model and data setup."""
+    positive_ints = ('num_rounds', 'local_epochs', 'kd_epochs', 'batch_size', 'patience')
+    for name in positive_ints:
+        if getattr(args, name) <= 0:
+            raise ValueError(f"--{name} must be greater than zero")
+    if args.num_workers < 0:
+        raise ValueError("--num_workers cannot be negative")
+    if args.lr <= 0:
+        raise ValueError("--lr must be greater than zero")
+    if args.temperature <= 0:
+        raise ValueError("--temperature must be greater than zero")
+    for name in ('alpha', 'beta'):
+        if not 0 <= getattr(args, name) <= 1:
+            raise ValueError(f"--{name} must be between 0 and 1")
+    if args.run_multiple_seeds and args.num_seeds <= 0:
+        raise ValueError("--num_seeds must be greater than zero")
+
+
 def create_client_datasets(
     args: argparse.Namespace,
-    data_dir: str = '../data/'
+    data_dir: Optional[str] = None
 ) -> Tuple[Dict[str, FullDataset], Dict[str, FullDataset]]:
     """
     Create client training and test datasets for each dataset
@@ -206,7 +236,10 @@ def create_client_datasets(
         client_datasets: Dict of training datasets keyed by dataset name
         client_test_datasets: Dict of test datasets keyed by dataset name
     """
-    datasets_list = args.datasets.split(',')
+    data_dir = data_dir or args.data_dir
+    datasets_list = [name.strip() for name in args.datasets.split(',') if name.strip()]
+    if not datasets_list:
+        raise ValueError("--datasets must contain at least one dataset name")
     client_datasets = {}
     client_test_datasets = {}
 
@@ -215,7 +248,7 @@ def create_client_datasets(
         client_datasets[dataset_name] = FullDataset(
             data_dir=train_dir,
             dataset_type=dataset_name,
-            cache_data=True,
+            cache_data=args.cache_data,
             verbose=True
         )
         print(f"Dataset {dataset_name} training samples: {len(client_datasets[dataset_name])}")
@@ -224,7 +257,7 @@ def create_client_datasets(
         client_test_datasets[dataset_name] = FullDataset(
             data_dir=test_dir,
             dataset_type=dataset_name,
-            cache_data=True,
+            cache_data=args.cache_data,
             verbose=True
         )
         print(f"Dataset {dataset_name} test samples: {len(client_test_datasets[dataset_name])}")
@@ -234,7 +267,8 @@ def create_client_datasets(
 
 def create_client_dataloaders(
     client_datasets: Dict[str, FullDataset],
-    args: argparse.Namespace
+    args: argparse.Namespace,
+    seed: Optional[int] = None
 ) -> Dict[str, FullDataLoader]:
     """
     Create dataloaders for each client dataset
@@ -252,7 +286,7 @@ def create_client_dataloaders(
         client_dataloaders[dataset_name] = FullDataLoader(
             dataset,
             batch_size=args.batch_size,
-            seed=args.seed,
+            seed=args.seed if seed is None else seed,
             num_workers=args.num_workers,
             shuffle=True
         )
@@ -438,11 +472,12 @@ def train_reverse_knowledge_distillation(
 
             student_logits = mm_model(student_inputs)
 
-            ce_loss = nn.CrossEntropyLoss()(student_logits, labels)
+            temperature = criterion.temperature
+            ce_loss = nn.functional.cross_entropy(student_logits, labels)
             kl_loss = nn.KLDivLoss(reduction='batchmean')(
-                nn.functional.log_softmax(student_logits, dim=1),
-                nn.functional.softmax(teacher_logits, dim=1)
-            )
+                nn.functional.log_softmax(student_logits / temperature, dim=1),
+                nn.functional.softmax(teacher_logits / temperature, dim=1)
+            ) * (temperature ** 2)
             loss = beta * kl_loss + (1 - beta) * ce_loss
 
             loss.backward()
@@ -662,7 +697,8 @@ def train_with_seed(args: argparse.Namespace, seed: int) -> Tuple[nn.Module, Dic
     """
     set_seed(seed)
 
-    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+    device = resolve_device(args.device)
+    args.device = device
     print(f"\nUsing device: {device}")
     print(f"Using random seed: {seed}\n")
 
@@ -670,7 +706,7 @@ def train_with_seed(args: argparse.Namespace, seed: int) -> Tuple[nn.Module, Dic
 
     print("Loading client datasets...")
     client_datasets, client_test_datasets = create_client_datasets(args)
-    client_dataloaders = create_client_dataloaders(client_datasets, args)
+    client_dataloaders = create_client_dataloaders(client_datasets, args, seed)
 
     print("Initializing global model...")
     global_model = get_model(model_type='um', backbone=args.backbone, dataset='gamma', num_classes=2)
@@ -720,8 +756,7 @@ def train_with_seed(args: argparse.Namespace, seed: int) -> Tuple[nn.Module, Dic
         for client_id in selected_clients:
             print(f"\nClient {client_id} local training...")
 
-            local_um_model = type(global_model)().to(device)
-            local_um_model.load_state_dict(global_model.state_dict())
+            local_um_model = copy.deepcopy(global_model).to(device)
 
             if client_id.startswith('airogs'):
                 print("  AIROGS client direct single-modal training...")
@@ -803,17 +838,20 @@ def train_with_seed(args: argparse.Namespace, seed: int) -> Tuple[nn.Module, Dic
             scores = []
             for dataset_name, dataset_results in results.items():
                 if 'local_mm' in dataset_results:
-                    score = dataset_results['local_mm'].get(args.monitor_metric, 0)
+                    metric_key = 'f1_score' if args.monitor_metric == 'f1' else args.monitor_metric
+                    score = dataset_results['local_mm'].get(metric_key, 0)
                     scores.append(score)
                 elif 'global_fundus' in dataset_results:
-                    score = dataset_results['global_fundus'].get(args.monitor_metric, 0)
+                    metric_key = 'f1_score' if args.monitor_metric == 'f1' else args.monitor_metric
+                    score = dataset_results['global_fundus'].get(metric_key, 0)
                     scores.append(score)
             
             # Compute mean
-            if scores:
-                current_score = sum(scores) / len(scores)
+            finite_scores = [score for score in scores if np.isfinite(score)]
+            if finite_scores:
+                current_score = sum(finite_scores) / len(finite_scores)
             else:
-                current_score = 0
+                current_score = -float('inf')
             
             print(f"Monitored metric ({args.monitor_metric}) mean across participants: {current_score:.4f}, best: {best_score:.4f}")
             
@@ -868,6 +906,31 @@ def train_with_seed(args: argparse.Namespace, seed: int) -> Tuple[nn.Module, Dic
     return global_model, client_mm_models
 
 
+def save_final_models(
+    args: argparse.Namespace,
+    seed: int,
+    global_model: nn.Module,
+    client_mm_models: Dict[str, nn.Module]
+) -> None:
+    """Save final checkpoints for one seed using the documented filenames."""
+    seed_output_dir = os.path.join(args.output_dir, f'seed_{seed}')
+    os.makedirs(seed_output_dir, exist_ok=True)
+
+    torch.save({
+        'model_state_dict': global_model.state_dict(),
+        'backbone': args.backbone,
+        'num_classes': 2
+    }, os.path.join(seed_output_dir, 'global_model_final.pth'))
+
+    for dataset_name, model in client_mm_models.items():
+        torch.save({
+            'dataset': dataset_name,
+            'model_state_dict': model.state_dict(),
+            'backbone': args.backbone,
+            'num_classes': 2
+        }, os.path.join(seed_output_dir, f'local_mm_model_{dataset_name}_final.pth'))
+
+
 def main() -> None:
     """
     Main entry point
@@ -875,13 +938,11 @@ def main() -> None:
     Decide whether to run single-seed or multi-seed experiments based on command-line arguments and invoke the corresponding training pipeline.
     """
     args = parse_args()
+    validate_args(args)
 
     # Handle --best_only argument
     if args.best_only:
         print("Early stopping enabled and only best model will be saved (--best_only)")
-
-    final_global_model = None
-    final_client_mm_models = {}
 
     if args.run_multiple_seeds:
         seeds = list(range(args.num_seeds))
@@ -893,46 +954,21 @@ def main() -> None:
             print(f"Current seed: {seed}")
             print('='*60)
             global_model, client_mm_models = train_with_seed(args, seed)
-            # 保存最后一个种子的模型
-            final_global_model = global_model
-            final_client_mm_models = client_mm_models
+            if not args.best_only:
+                save_final_models(args, seed, global_model, client_mm_models)
 
         print(f"\nTraining completed for all {args.num_seeds} seeds!")
         # 禁用CSV文件保存
         # print(f"汇总结果已保存到: {os.path.join(args.output_dir, 'all_results.csv')}")
 
     else:
-        final_global_model, final_client_mm_models = train_with_seed(args, args.seed)
+        global_model, client_mm_models = train_with_seed(args, args.seed)
+        if not args.best_only:
+            save_final_models(args, args.seed, global_model, client_mm_models)
 
     print("\nTraining completed...")
 
-    # Save final models (only when best_only is not enabled)
-    if not args.best_only:
-        print("Saving final models...")
-        # Create subfolder per seed
-        seed_output_dir = os.path.join(args.output_dir, f'seed_{args.seed}')
-        os.makedirs(seed_output_dir, exist_ok=True)
-        
-        if final_global_model is not None:
-            global_model_path = os.path.join(seed_output_dir, 'global_model_final.pth')
-            torch.save({
-                'model_state_dict': final_global_model.state_dict(),
-                'backbone': args.backbone,
-                'num_classes': 2
-            }, global_model_path)
-            print(f"Global model saved to: {global_model_path}")
-
-        if final_client_mm_models:
-            for dataset_name, mm_model in final_client_mm_models.items():
-                model_path = os.path.join(seed_output_dir, f'local_mm_model_{dataset_name}.pth')
-                torch.save({
-                    'dataset': dataset_name,
-                    'model_state_dict': mm_model.state_dict(),
-                    'backbone': args.backbone,
-                    'num_classes': 2
-                }, model_path)
-                print(f"Local multi-modal model ({dataset_name}) saved to: {model_path}")
-    else:
+    if args.best_only:
         print("Best models saved via early stopping, skipping final model saving")
 
     print("\nAll models saved!")

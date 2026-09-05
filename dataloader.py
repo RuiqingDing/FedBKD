@@ -107,10 +107,10 @@ class FullDataset(Dataset):
             return [self.data_dir / f for f in file_list if (self.data_dir / f).exists()]
 
         if dataset_type == 'all':
-            return list(self.data_dir.glob('*.pkl'))
+            return sorted(self.data_dir.glob('*.pkl'))
 
         normalized_type = self._normalize_dataset_type(dataset_type)
-        return list(self.data_dir.glob(f'*{normalized_type}*.pkl'))
+        return sorted(self.data_dir.glob(f'*{normalized_type}*.pkl'))
 
     def _normalize_dataset_type(self, dataset_type: str) -> str:
         """
@@ -159,6 +159,10 @@ class FullDataset(Dataset):
                 self.invalid_files.append((file_path, str(e)))
 
         self.file_paths = valid_files
+
+        if not self.file_paths:
+            details = f" ({len(self.invalid_files)} invalid files)" if self.invalid_files else ""
+            raise ValueError(f"No valid .pkl files found in {self.data_dir}{details}")
 
         if self.verbose and self.invalid_files:
             print(f"Found {len(self.invalid_files)} invalid files")
@@ -214,6 +218,14 @@ class FullDataset(Dataset):
             else:
                 tensor_data[key] = value
 
+        # CrossEntropyLoss expects one integer class index per sample.
+        label = torch.as_tensor(tensor_data['label']).long().reshape(-1)
+        if label.numel() != 1:
+            raise ValueError(
+                f"Expected a scalar class label in {file_path.name}, got shape {tuple(label.shape)}"
+            )
+        tensor_data['label'] = label.squeeze(0)
+
         if self.data_cache is not None:
             self.data_cache[file_path] = tensor_data
 
@@ -266,10 +278,7 @@ class FullDataset(Dataset):
             return sample
 
         except Exception as e:
-            print(f"Error loading file {file_path}: {e}")
-            empty_sample = self._get_empty_sample()
-            empty_sample['file_name'] = file_path.name
-            return empty_sample
+            raise RuntimeError(f"Failed to load dataset sample {file_path}") from e
 
     def _get_empty_sample(self) -> Dict[str, torch.Tensor]:
         """

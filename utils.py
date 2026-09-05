@@ -17,6 +17,7 @@ Main functions:
 """
 
 import os
+import copy
 import numpy as np
 import cv2
 import pandas as pd
@@ -33,7 +34,6 @@ from sklearn.metrics import (
     f1_score, roc_auc_score, cohen_kappa_score, confusion_matrix
 )
 import warnings
-warnings.filterwarnings('ignore')
 
 
 def set_seed(seed: int) -> None:
@@ -51,6 +51,22 @@ def set_seed(seed: int) -> None:
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     print(f"Setting random seed: {seed}")
+
+
+def resolve_device(requested_device: str) -> torch.device:
+    """Resolve a requested device and fail early for invalid CUDA indices."""
+    device = torch.device(requested_device)
+    if device.type != 'cuda':
+        return device
+    if not torch.cuda.is_available():
+        warnings.warn(f"CUDA device '{requested_device}' is unavailable; using CPU")
+        return torch.device('cpu')
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    if index >= torch.cuda.device_count():
+        raise ValueError(
+            f"CUDA device index {index} is unavailable; found {torch.cuda.device_count()} device(s)"
+        )
+    return device
 
 
 def oct_to_pil(oct_img: np.ndarray) -> Image.Image:
@@ -389,15 +405,29 @@ def calculate_metrics(
         - f1_score: F1 score
         - optimal_threshold: Optimal threshold
     """
-    if find_optimal and y_prob is not None:
+    y_true = np.asarray(y_true).reshape(-1)
+    y_pred = np.asarray(y_pred).reshape(-1)
+    y_prob = None if y_prob is None else np.asarray(y_prob).reshape(-1)
+    if y_true.size == 0:
+        raise ValueError("Cannot calculate metrics for an empty dataset")
+
+    if find_optimal and y_prob is not None and np.unique(y_true).size > 1:
         optimal_threshold = find_optimal_threshold(y_true, y_prob, 'youden')
         y_pred_optimal = (y_prob >= optimal_threshold).astype(int)
     else:
         y_pred_optimal = y_pred
         optimal_threshold = 0.5
     
-    auroc = roc_auc_score(y_true, y_prob) if y_prob is not None else 0.0
-    kappa = cohen_kappa_score(y_true, y_pred_optimal)
+    auroc = (
+        roc_auc_score(y_true, y_prob)
+        if y_prob is not None and np.unique(y_true).size > 1
+        else float('nan')
+    )
+    kappa = (
+        cohen_kappa_score(y_true, y_pred_optimal)
+        if np.unique(np.concatenate([y_true, y_pred_optimal])).size > 1
+        else 1.0
+    )
     f1 = f1_score(y_true, y_pred_optimal, zero_division=0)
     
     return {
@@ -482,9 +512,9 @@ def validate_model(
                     inputs = inputs.to(device)
                     labels = labels.to(device)
 
-            if inputs.dim() == 1:
+            if isinstance(inputs, torch.Tensor) and inputs.dim() == 1:
                 raise ValueError(f"Detected 1D input tensor (shape: {inputs.shape}). This usually indicates a data loading or collate function issue. Please check data file formats.")
-            if inputs.dim() == 3:
+            if isinstance(inputs, torch.Tensor) and inputs.dim() == 3:
                 inputs = inputs.unsqueeze(0)
             
             outputs = model(inputs)
@@ -573,7 +603,11 @@ def test_model(
             all_labels.extend(labels.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())
     
-    metrics = calculate_metrics(np.array(all_labels), np.array(all_preds), np.array(all_probs))
+    # Test metrics use the fixed 0.5 decision threshold. Selecting a threshold on
+    # the test set would leak labels and overstate F1/Kappa.
+    metrics = calculate_metrics(
+        np.array(all_labels), np.array(all_preds), np.array(all_probs), find_optimal=False
+    )
     
     return metrics
 
@@ -721,26 +755,36 @@ def federated_averaging(
         Aggregated global model
     """
     if not client_models:
-        return None
+        raise ValueError("client_models must contain at least one model")
     
     if client_weights is None:
         client_weights = [1.0 / len(client_models)] * len(client_models)
-    
+
+    if len(client_weights) != len(client_models):
+        raise ValueError("client_weights and client_models must have the same length")
     client_weights = [float(w) for w in client_weights]
+    if any(w < 0 for w in client_weights):
+        raise ValueError("client_weights cannot contain negative values")
     total_weight = sum(client_weights)
+    if total_weight <= 0:
+        raise ValueError("client_weights must have a positive sum")
     client_weights = [w / total_weight for w in client_weights]
-    
-    global_model = client_models[0]
+
+    reference_keys = set(client_models[0].state_dict())
+    if any(set(model.state_dict()) != reference_keys for model in client_models[1:]):
+        raise ValueError("All client models must have identical state dictionaries")
+
+    global_model = copy.deepcopy(client_models[0])
     global_state_dict = global_model.state_dict()
-    
+
     for key in global_state_dict.keys():
-        global_state_dict[key] = torch.zeros_like(global_state_dict[key]).float()
-        
-        for i, client_model in enumerate(client_models):
-            client_state_dict = client_model.state_dict()
-            param_value = client_state_dict[key].float()
-            weight_value = float(client_weights[i])
-            global_state_dict[key] += weight_value * param_value
+        reference = global_state_dict[key]
+        if not torch.is_floating_point(reference):
+            continue
+        averaged = torch.zeros_like(reference)
+        for weight, client_model in zip(client_weights, client_models):
+            averaged.add_(client_model.state_dict()[key], alpha=weight)
+        global_state_dict[key] = averaged
     
     global_model.load_state_dict(global_state_dict)
     return global_model
