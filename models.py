@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FedMKD Model Definition Module
+FedBKD Model Definition Module
 
 Provides multi-modal cross-attention models and knowledge distillation loss functions,
 supporting multiple datasets such as GAMMA, Zhongshan, Gongli,
