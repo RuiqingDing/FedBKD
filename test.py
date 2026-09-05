@@ -4,8 +4,6 @@ Model Testing Script
 
 Loads a trained model checkpoint and evaluates performance on the test set,
 outputting evaluation metrics including AUROC, Kappa, and F1.
-
-Created: 2025-01-11
 """
 
 import argparse
